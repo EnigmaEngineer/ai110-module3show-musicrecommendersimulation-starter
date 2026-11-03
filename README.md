@@ -11,7 +11,7 @@ Your goal is to:
 - Evaluate what your system gets right and wrong
 - Reflect on how this mirrors real world AI recommenders
 
-Replace this paragraph with your own summary of what your version does.
+**VibeFinder 1.0** is a content-based recommender for a 10-song catalog. A listener's taste profile (favorite genre and mood, plus optional targets for energy, valence, danceability and more) is compared with every song. Each song earns points for matching labels and for numbers that are *close* to the target, and the top 5 are shown in a table with the reason for every point. The project includes three scoring modes (Genre-First, Mood-First, Energy-Focused), five extra song features, and a diversity penalty that discourages repeating an artist or genre. It also documents where the system helps and where it misleads: see `model_card.md`.
 
 ---
 
@@ -21,74 +21,81 @@ Replace this paragraph with your own summary of what your version does.
 
 Platforms like Spotify and YouTube combine two ideas. **Collaborative filtering** learns from the behavior of millions of users (likes, skips, playlist adds, watch time) and recommends what similar listeners enjoyed. **Content-based filtering** looks at the attributes of the songs themselves (genre, mood, tempo, energy) and recommends items that resemble what a user already likes. Real systems blend both and train on huge amounts of behavior data.
 
-My version is purely **content-based**. It has no other users and no listening history, so it cannot learn from crowds. Instead it prioritizes **closeness to a stated taste**: it rewards songs whose numeric features (energy above all) are *near* the user's targets, not simply higher or lower, and it gives partial credit for a matching or related genre and mood.
+My version is purely **content-based**. It has no other users and no listening history, so it cannot learn from crowds. Instead it prioritizes **closeness to a stated taste**: it rewards songs whose numeric features (energy above all) are *near* the user's targets, not simply higher or lower, and it gives points for a matching genre and mood.
 
 ### Features
 
-**`Song`** stores: `id`, `title`, `artist`, `genre`, `mood`, `energy`, `tempo_bpm`, `valence`, `danceability`, `acousticness`.
+**Each song** (a row of `data/songs.csv`) has `id`, `title`, `artist`, `genre`, `mood`, `energy`, `tempo_bpm`, `valence`, `danceability` and `acousticness`, plus five optional columns: `popularity` (0-100), `release_decade`, `detailed_mood_tags` (comma-separated), `instrumentalness` and `speechiness` (0-1). So far only two songs have the optional columns filled in.
 
-- Used in scoring: `genre`, `mood`, `energy`, `valence`, `acousticness`, `tempo_bpm`, `danceability`
-- Identifiers only: `id`, `title`, `artist`
+- **Scored:** `genre`, `mood`, `energy`, `valence`, `danceability`, `acousticness`, and the five optional columns whenever both the song and the profile have a value.
+- **Not scored:** `id`, `title`, `tempo_bpm` (loaded but unused). `artist` is not scored either, but the diversity penalty uses it.
 
-**`UserProfile`** (a dictionary of target values) stores: `favorite_genre`, `favorite_mood`, `target_energy`, `target_acousticness`, `target_tempo_bpm`, `target_valence`, `target_danceability`.
-
-Status: this section is the plan. `score_song` and `recommend_songs` in `src/recommender.py` are still to be implemented.
+**A taste profile** is a dictionary. Any key can be left out and is then ignored: `genre`, `mood`, `energy`, `valence`, `danceability`, `acousticness`, `instrumentalness`, `speechiness`, `popularity`, `release_decade`, `detailed_mood_tags` (a list or a comma-separated string).
 
 ### Data flow
 
 ```
-Input                     Process (the loop)                          Output
------                     ------------------                          ------
+Input                     Process                                           Output
+-----                     -------                                           ------
 User prefs (dict)  --->   load_songs("data/songs.csv")
-                          for every song in the list:
-                            score_song(user_prefs, song)
-                              -> (score 0-10, reasons)
-                          sort by score, highest first          --->  Top K recommendations
-                          (ties: alphabetical by title)               (song, score, explanation)
-                          keep the first k
+                          score_song(user_prefs, song, mode)
+                            -> (score, reasons) for every song
+                          get_top_recommendations: take the best song,
+                            then subtract 1.5 (same artist) / 1.0 (same
+                            genre) from the remaining songs, repeat    --->   Top 5 as a table
+                          (ties: alphabetical by title)                       Rank, Title, Artist,
+                                                                              Score, Reasons
 ```
 
 ### Algorithm Recipe
 
-**Scoring rule (one song).** Each song gets a score from 0 to 10:
+**Scoring rule (one song).** Only the preferences the listener gives can earn points. Default weights:
 
-| Component | Max points | How it is earned |
+| Component | Points | How it is earned |
 |---|---|---|
-| Genre | 2.0 | `2.0 x genre_similarity` (1.0 for the same genre, a partial value for related genres, else 0) |
-| Mood | 2.0 | `2.0 x mood_similarity` (same idea) |
-| Energy | 2.2 | Gaussian closeness, sigma 0.12 |
-| Valence | 1.2 | Gaussian closeness, sigma 0.07 |
-| Acousticness | 1.0 | Gaussian closeness, sigma 0.17 |
-| Tempo (BPM) | 0.8 | Gaussian closeness, sigma 15 |
-| Danceability | 0.8 | Gaussian closeness, sigma 0.08 |
-| **Total** | **10.0** | The weights sum to exactly 10, so scores stay in a fixed range |
+| Genre | 1.0 | exact match (case and edge spaces ignored) |
+| Mood | 1.0 | exact match |
+| Energy | up to 4.0 | `weight x (1 - abs(song - target))`, never below 0 |
+| Valence | up to 1.0 | same closeness rule |
+| Danceability | up to 1.0 | same closeness rule |
+| Acousticness | up to 0.5 | same closeness rule |
+| Instrumentalness | up to 1.0 | same closeness rule |
+| Speechiness | up to 0.5 | same closeness rule |
+| Popularity | up to 0.5 | closeness on a 0-100 scale: `1 - abs(diff) / 100` |
+| Release decade | 0.5 | exact match |
+| Mood tags | 0.25 per tag | each tag the song shares with the profile |
 
-Numeric closeness rewards songs *near* the user's target rather than simply higher or lower: `points = weight x exp(-(x - p)^2 / (2 x sigma^2))`, where `x` is the song's value and `p` is the user's target. An exact match earns the full weight and a distant value earns about 0. Each sigma is about half of that feature's spread in the data, so features with a narrow range (valence) get a narrow tolerance.
+With the first six rows filled in the most a song can score is **8.5**. All ten features give 11.0, plus 0.25 for each tag listed. The closeness rule rewards songs *near* the target, not simply higher or lower: an exact match earns the full weight and a song 1.0 away earns nothing.
 
-Related genres and moods earn partial credit from small hand-written tables (anything not listed is 0):
+**Scoring modes** (`--mode`). Each mode only changes three weights; everything else stays as in the table.
 
-| Genre pair | Credit | Mood pair | Credit |
+| Mode | Genre | Mood | Energy |
 |---|---|---|---|
-| lofi ~ ambient | 0.6 | chill ~ relaxed | 0.8 |
-| lofi ~ jazz | 0.5 | chill ~ focused | 0.7 |
-| pop ~ indie pop | 0.7 | relaxed ~ focused | 0.5 |
-| pop ~ synthwave | 0.4 | intense ~ moody | 0.4 |
+| `genre_first` | 3.0 | 1.0 | 1.0 |
+| `mood_first` | 1.0 | 3.0 | 1.0 |
+| `energy_focused` | 1.0 | 1.0 | 4.0 (the same as the default weights) |
 
-Other genre pairs: ambient ~ jazz 0.3, indie pop ~ synthwave 0.3, pop ~ rock 0.2, rock ~ synthwave 0.2.
+They are built with the Strategy pattern (`ScoringStrategy` in `src/recommender.py`), so a new mode is one small class plus one dictionary entry.
 
 **Ranking rule (all songs).**
 
-1. Score every song in the catalog against the user.
-2. Sort by score, highest first, breaking ties alphabetically by title.
-3. Return the top `k` songs, each with the reasons that earned its points.
+1. Score every song against the profile.
+2. Pick the best song and add it to the results.
+3. Subtract 1.5 from remaining songs by an artist already picked and 1.0 from remaining songs in a genre already picked (each penalty applies once). Penalized picks show a reason such as `diversity penalty (artist duplicate): -1.50`.
+4. Repeat until five songs are chosen. Ties break alphabetically by title.
+
+`--no-diversity` skips steps 2-3 and shows the plain top 5.
+
+**Original plan vs. what I built.** My first design used Gaussian closeness curves with narrow tolerances, partial credit from small tables of related genres and moods, and a 10-point scale. I implemented the simpler linear closeness and exact label matching described above. Related-genre credit is listed as future work in the model card.
 
 ### Expected biases and limitations
 
-- **Genre and mood together are 4 of 10 points.** A song with the right labels can edge out a song that matches the user's numbers better. Energy (2.2 points) is the largest single weight, so a strong numeric match can still win.
-- **The catalog is small and skewed.** Of 10 songs, 3 are lofi and 3 are chill, and 5 of the 7 genres have a single song. Lofi and chill users get several close matches, while others get one. There are also no songs with energy between 0.43 and 0.74, so a mid-energy user has no close match.
-- **Correlated features count the same thing several times.** Energy, acousticness, tempo and danceability track each other closely (energy vs. acousticness r = -0.99) and hold 4.8 of the 10 points. A user who wants high energy and an acoustic sound cannot be satisfied by this catalog.
-- **The similarity tables and weights are my judgment, not tuned.** Genre pairs I did not list count as unrelated, which reflects my assumptions about music.
-- **One genre, one mood and no history.** The profile cannot describe someone with several tastes, and nothing stops one artist or genre from filling the whole top list, which can create a filter bubble.
+- **Energy dominates.** With the default weights energy is 4.0 of 8.5 points (47%), while genre and mood together are 2.0 (24%). A song with the right energy can beat one with the right labels.
+- **The catalog is small and skewed.** Of 10 songs, 3 are lofi and 3 are chill, and 5 of the 7 genres have a single song. There are no songs with energy between 0.43 and 0.74, so a mid-energy listener has no close match.
+- **Correlated features count the same thing several times.** Energy tracks acousticness (r = -0.99), tempo (0.96) and danceability (0.86) across the catalog, so a listener who wants high energy *and* an acoustic sound cannot be satisfied.
+- **Labels are exact.** "indie pop" earns nothing for a "pop" listener, and "chill" and "relaxed" count as unrelated.
+- **Diversity has limits.** With 10 songs the penalty cannot always remove a repeated artist, and it can demote songs in the listener's own favorite genre.
+- **One genre, one mood and no history.** The profile cannot describe someone with several tastes.
 
 ---
 
@@ -102,34 +109,40 @@ Other genre pairs: ambient ~ jazz 0.3, indie pop ~ synthwave 0.3, pop ~ rock 0.2
    python -m venv .venv
    source .venv/bin/activate      # Mac or Linux
    .venv\Scripts\activate         # Windows
+   ```
 
-2. Install dependencies
+2. Install dependencies:
 
-```bash
-pip install -r requirements.txt
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-3. Run the app:
+3. Run the app from the project root:
 
-```bash
-python -m src.main
-```
+   ```bash
+   python -m src.main
+   ```
+
+   Options:
+
+   ```bash
+   python -m src.main --mode mood-first     # genre_first, mood_first or energy_focused
+   python -m src.main --no-diversity        # plain top 5, no artist/genre penalty
+   ```
 
 ### Running Tests
-
-Run the starter tests with:
 
 ```bash
 pytest
 ```
 
-You can add more tests in `tests/test_recommender.py`.
+The tests cover the starter checks (`tests/test_recommender.py`), edge cases and adversarial profiles (`tests/test_scoring_edge_cases.py`), the new song features, the scoring modes, the diversity penalty, and the table output. 439 pass; 6 more are marked as expected failures because they record known problems in the scoring code (see the model card).
 
 ---
 
 ## Sample Recommendation Output
 
-Output of `python -m src.main` on the 10-song catalog, one block per profile (top 5 each, pasted verbatim from the terminal):
+Output of `python -m src.main` on the 10-song catalog, one block per profile (top 5 each, pasted verbatim from the terminal, with the diversity penalty on). Add `--no-diversity` to see the plain ranking.
 
 ### High-Energy Pop
 

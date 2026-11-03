@@ -30,10 +30,11 @@ Think of the recommender as a judge holding a scorecard. For every song in the c
 - A matching mood earns 1 point.
 - Energy earns up to 4 points, depending on how close the song's energy is to the target.
 - Valence and danceability each earn up to 1 point, and acousticness up to half a point, but only when the listener gave a target for them.
+- Five optional extras are scored only when both the listener and the song have a value: instrumentalness (up to 1 point), speechiness, popularity and release decade (up to half a point each), and 0.25 points for every mood tag they share.
 
-For the measurements, the rule is "closest to what you asked for", not "highest". A song that matches the target exactly earns the full points, a song that is further away earns fewer, and a song a full 1.0 away earns none. This means a listener who wants calm music is never handed the most intense track just because its number is big. With every preference filled in, the most a song can score is 8.5. (My first version gave genre 2 points and energy 2 points, for a maximum of 7.5. I changed both in the experiment described in Section 7.)
+For the measurements, the rule is "closest to what you asked for", not "highest". A song that matches the target exactly earns the full points, a song that is further away earns fewer, and a song a full 1.0 away earns none. This means a listener who wants calm music is never handed the most intense track just because its number is big. With the first six preferences filled in, the most a song can score is 8.5 (the optional extras add up to 2.5 more, plus 0.25 per tag). (My first version gave genre 2 points and energy 2 points, for a maximum of 7.5. I changed both in the experiment described in Section 7.)
 
-**Turning scores into recommendations.** The model scores every song, sorts them from best to worst (alphabetical by title if two songs tie), and returns the top five. Each recommendation comes with plain-language reasons, such as "genre match: 'pop' (+1.00)", so you can see exactly where its points came from.
+**Turning scores into recommendations.** The model scores every song, then picks five one at a time. It takes the best remaining song and, before choosing the next one, subtracts 1.5 points from remaining songs by the same artist and 1.0 from remaining songs in the same genre (alphabetical by title if two songs tie). Running with `--no-diversity` skips that penalty and returns the plain top five. Three scoring modes (`--mode genre_first`, `mood_first` or `energy_focused`) change only the genre, mood and energy weights. Each recommendation comes with plain-language reasons, such as "genre match: 'pop' (+1.00)", so you can see exactly where its points came from.
 
 **A worked example.** For a listener who wants pop, happy, energy 0.8, the song Sunrise City is pop (+1.00), happy (+1.00), and has energy 0.82, which is very close to 0.8 (+3.92). That totals 5.92, the highest in the catalog, so it comes first.
 
@@ -45,9 +46,9 @@ For the measurements, the rule is "closest to what you asked for", not "highest"
 
 ## 4. Data  
 
-**Size.** 10 songs in `data/songs.csv`. I did not add or remove any.
+**Size.** 10 songs in `data/songs.csv`. I did not add or remove songs, only five new columns.
 
-**What each song has.** Title, artist, genre, mood, and numbers for energy, tempo (BPM), valence, danceability and acousticness. The scorer uses everything except title, artist and tempo. There is no year, popularity, language or lyrics column.
+**What each song has.** Title, artist, genre, mood, and numbers for energy, tempo (BPM), valence, danceability and acousticness. I added five optional columns: popularity, release decade, detailed mood tags, instrumentalness and speechiness. The scorer uses everything except title, artist and tempo (artist is used by the diversity penalty). Only Sunrise City and Midnight Coding have values in the five new columns so far, so those features can only score two songs. There is no language or lyrics column.
 
 **Genres (7).** lofi 3, pop 2, and one each of ambient, indie pop, jazz, rock and synthwave.
 
@@ -75,7 +76,7 @@ Where the system struggles or behaves unfairly.
 
 **Weakness found: the energy gap creates a high-energy filter bubble and leaves mid-energy listeners underserved.** The catalog's energy values split into two clusters with nothing in between (five songs at 0.75 to 0.93 and five at 0.28 to 0.42), and after I raised the energy weight to 4.0 (47% of the 8.5 maximum), the same five high-energy songs filled the entire top 5 for both High-Energy Pop and Deep Intense Rock and four of the five slots for Conflicted Listener. A listener who wants energy around 0.58 sits in the empty gap, so the top five (Midnight Coding, Night Drive Loop, Focus Flow, Rooftop Lights, Coffee Shop Stories) are separated by only 0.20 points (3.36 to 3.16) across four different genres, which is effectively a tie that looks like a recommendation. The scoring never signals this, because a song 0.2 away on energy still earns most of the points and the system has no way to say "nothing here fits." Genre matching is also an exact string comparison, so "indie pop" earns no credit for a "pop" listener, which compounds the problem for anyone whose taste falls outside the few labels in a 10-song catalog.
 
-**Other limits.** Mood is an exact word match, so "chill" and "relaxed" count as completely different and the system cannot tell a slightly moody song from a very moody one. Tempo is loaded but never scored, and lyrics, language, era and artist are not considered. It cannot say "I have nothing for you": a listener whose genre is missing from the catalog still gets five songs. Finally, a profile with fewer preferences has a lower possible maximum score, so scores from different profiles should not be compared with each other.
+**Other limits.** Mood is an exact word match, so "chill" and "relaxed" count as completely different and the system cannot tell a slightly moody song from a very moody one. Tempo is loaded but never scored, and lyrics and language are not considered. The newer popularity, decade and tag features are filled in for only two songs. It cannot say "I have nothing for you": a listener whose genre is missing from the catalog still gets five songs. Finally, a profile with fewer preferences has a lower possible maximum score, so scores from different profiles should not be compared with each other.
 
 ---
 
@@ -83,7 +84,7 @@ Where the system struggles or behaves unfairly.
 
 ### Profiles I tested
 
-I ran four taste profiles through the recommender on the 10-song catalog (current weights: genre 1.0, mood 1.0, energy 4.0, valence 1.0, danceability 1.0, acousticness 0.5):
+I ran four taste profiles through the recommender on the 10-song catalog (current weights: genre 1.0, mood 1.0, energy 4.0, valence 1.0, danceability 1.0, acousticness 0.5). The rankings in this section are the plain top 5, as printed by `python -m src.main --no-diversity`. The default run applies the diversity penalty, described near the end of this section:
 
 | Profile | Asks for | Top 5 (score) |
 |---|---|---|
@@ -92,7 +93,7 @@ I ran four taste profiles through the recommender on the 10-song catalog (curren
 | **Deep Intense Rock** | rock, intense, very energetic, dark-ish, not acoustic | Storm Runner (8.41), Gym Hero (6.90), Night Drive Loop (5.63), Sunrise City (5.52), Rooftop Lights (5.20) |
 | **Conflicted Listener** | jazz, relaxed, but also very energetic *and* very acoustic | Coffee Shop Stories (4.38), Storm Runner (4.06), Gym Hero (3.96), Sunrise City (3.82), Rooftop Lights (3.67) |
 
-I also tried a few extra cases: a listener who only says "energy 0.58", a "hip hop / angry" listener whose genre is not in the catalog, and a plain "pop / happy / energy 0.8" listener. I also changed the weights (genre 2.0 to 1.0, energy 2.0 to 4.0) and re-ran everything. For correctness I wrote 360 small tests of odd inputs (wrong types, out-of-range numbers, empty profiles, case and spacing in genre names). All pass, and 6 known problems are recorded in those tests rather than hidden.
+I also tried a few extra cases: a listener who only says "energy 0.58", a "hip hop / angry" listener whose genre is not in the catalog, and a plain "pop / happy / energy 0.8" listener. I also changed the weights (genre 2.0 to 1.0, energy 2.0 to 4.0) and re-ran everything. For correctness I wrote 445 automated tests in total. 360 of them are edge cases (wrong types, out-of-range numbers, empty profiles, case and spacing in genre names); the rest cover the new features, scoring modes, diversity penalty and table output. 439 pass, and the other 6 are known problems recorded as expected failures rather than hidden.
 
 ### What I compared, pair by pair
 
@@ -115,6 +116,15 @@ Gym Hero is a high-energy pop workout track. The system does not understand "moo
 - **A listener who only asked for "energy 0.58" got five songs from four different genres separated by just 0.20 points.** The catalog has no songs between energy 0.43 and 0.74, so for that taste the list is basically a coin flip dressed up as a recommendation.
 - **A genre that is not in the catalog (hip hop) is silently ignored.** The system still returns five songs, picked by numbers alone, with no warning that nothing fit.
 
+### What the diversity penalty changed
+
+The default run (`python -m src.main`) subtracts 1.5 points for a repeated artist and 1.0 for a repeated genre. On the four profiles:
+
+- **High-Energy Pop:** Gym Hero (pop, same genre as the already-picked Sunrise City) falls from 7.29 to 6.29 and drops from 2nd to 3rd, so Rooftop Lights moves up to 2nd.
+- **Chill Lofi:** Focus Flow (same artist and genre as Midnight Coding) falls from 7.38 to 4.88 and drops from 3rd to 5th.
+- **Deep Intense Rock:** the repeated Neon Echo song (Sunrise City) is pushed out, but Midnight Coding, a lofi song with energy 0.42 for a 0.92 target, takes its place at 5th with 4.04. Variety was bought with a weaker match.
+- **Repeats can survive:** with only 10 songs, Night Drive Loop (a second Neon Echo song) still makes High-Energy Pop's top 5 even after losing 1.5 points, and Focus Flow stays in Chill Lofi's. The penalty is a nudge, not a quota.
+
 ### Do the results make sense?
 
 For the profiles that fit the catalog well (Lofi and Rock), the top song is exactly the one I would pick by ear. For Pop the top two are reasonable, but third-place Rooftop Lights, which really is happy, loses to Gym Hero mainly on energy (0.76 vs. 0.93 when the listener wanted 0.9); Gym Hero's genre point and Rooftop Lights' mood point cancel out. The profile that did not fit the catalog (Conflicted Listener) produced the least trustworthy list, which is itself a useful finding: the recommender is only as good as the songs it has.
@@ -126,7 +136,7 @@ For the profiles that fit the catalog well (Lofi and Rock), the top song is exac
 1. **A bigger, more varied catalog.** Go from 10 songs to at least 100, with several songs per genre and plenty of mid-energy tracks. At the very least, 3 songs for each of the 7 genres would take 21.
 2. **Say so when nothing fits.** If no song is a real match (no genre, no mood, energy far away), tell the listener instead of showing a "top 5" that is really a tie.
 3. **Related genres and moods.** Give partial credit when labels are close ("indie pop" is near "pop", "relaxed" is near "chill"), so one exact spelling does not decide everything. I would try this before adding a flat penalty for a genre mismatch, because a flat penalty subtracts the same amount from every off-genre song and so would not change their order.
-4. **More variety in the top 5.** Avoid filling it with the same artist or the same group of loud songs.
+4. **Smarter variety.** I added a simple artist and genre penalty. With only 10 songs it cannot always remove a repeat and it can lift a poor match, so next I would scale the penalty to how many good alternatives exist.
 5. **Handle mixed tastes.** Let a listener hold two profiles at once (for example "gym" and "study") instead of forcing one blended set of numbers.
 6. **Learn from other listeners.** Collaborative filtering would use what similar people liked, rather than only matching a song's numbers to one profile.
 
